@@ -1,0 +1,17 @@
+name: Test
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actonlang/setup-acton@v1
+        with:
+          channel: "tip"
+      - name: Check out repository code
+        uses: actions/checkout@v4
+      - name: Build project
+        run: acton build
