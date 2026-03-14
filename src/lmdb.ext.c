@@ -1,7 +1,9 @@
 #include <lmdb.h>
 #include <stdlib.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <sys/stat.h>
+#include "rts/rts.h"
 
 // LMDB normally uses TLS (thread local storage) for some stuff, which is why
 // LMDB normally should run on one thread and one thread can only open one LMDB
@@ -16,6 +18,29 @@
 void lmdbQ___ext_init__() {
 }
 
+static void raise_lmdb_error(const char *op, int rc) {
+    char error_buf[256];
+    snprintf(error_buf, sizeof(error_buf), "%s: %s (%d)", op, mdb_strerror(rc), rc);
+    RAISE(lmdbQ_LMDBError, to$str(error_buf));
+}
+
+/* Method dispatch target for proc def _pin_affinity() in WriteTransaction */
+$R lmdbQ_WriteTransactionD__pin_affinityG_local(lmdbQ_WriteTransaction self, $Cont c$cont) {
+    pin_actor_affinity();
+    WorkerCtx wctx = GET_WCTX();
+    long wtid = SHARED_RQ;
+    if (wctx != NULL) {
+        wtid = wctx->id;
+    }
+    return $R_CONT(c$cont, to$int(wtid));
+}
+
+/* Method dispatch target for proc def _set_affinity(wtid: int) in WriteCursor */
+$R lmdbQ_WriteCursorD__set_affinityG_local(lmdbQ_WriteCursor self, $Cont c$cont, B_int wtid) {
+    set_actor_affinity((int)wtid->val);
+    return $R_CONT(c$cont, B_None);
+}
+
 B_str lmdbQ_version() {
     char version_str[128];
     int major, minor, patch;
@@ -27,7 +52,7 @@ B_str lmdbQ_version() {
     return to$str(version_str);
 }
 
-B_tuple lmdbQ_U__env_create_and_open(B_str path, int64_t max_size) {
+B_tuple lmdbQ_U_1_env_create_and_open(B_str path, int64_t max_size) {
     MDB_env *env;
     MDB_dbi dbi;
     MDB_txn *txn;
@@ -36,7 +61,7 @@ B_tuple lmdbQ_U__env_create_and_open(B_str path, int64_t max_size) {
     // Create environment
     rc = mdb_env_create(&env);
     if (rc != 0) {
-        RAISE(lmdbQ_LMDBError, to$str(mdb_strerror(rc)));
+        raise_lmdb_error("mdb_env_create", rc);
     }
 
     // Set map size - this is safe even when reopening an existing database
@@ -44,7 +69,7 @@ B_tuple lmdbQ_U__env_create_and_open(B_str path, int64_t max_size) {
     rc = mdb_env_set_mapsize(env, (size_t)max_size);
     if (rc != 0) {
         mdb_env_close(env);
-        RAISE(lmdbQ_LMDBError, to$str(mdb_strerror(rc)));
+        raise_lmdb_error("mdb_env_set_mapsize", rc);
     }
 
     // Open environment
@@ -57,14 +82,14 @@ B_tuple lmdbQ_U__env_create_and_open(B_str path, int64_t max_size) {
     rc = mdb_env_open(env, cpath, MDB_NOTLS, 0664);
     if (rc != 0) {
         mdb_env_close(env);
-        RAISE(lmdbQ_LMDBError, to$str(mdb_strerror(rc)));
+        raise_lmdb_error("mdb_env_open", rc);
     }
 
     // Open database - use a read-write transaction
     rc = mdb_txn_begin(env, NULL, 0, &txn);
     if (rc != 0) {
         mdb_env_close(env);
-        RAISE(lmdbQ_LMDBError, to$str(mdb_strerror(rc)));
+        raise_lmdb_error("mdb_txn_begin(open)", rc);
     }
 
     // Open the default database (NULL name)
@@ -74,13 +99,13 @@ B_tuple lmdbQ_U__env_create_and_open(B_str path, int64_t max_size) {
     if (rc != 0) {
         mdb_txn_abort(txn);
         mdb_env_close(env);
-        RAISE(lmdbQ_LMDBError, to$str(mdb_strerror(rc)));
+        raise_lmdb_error("mdb_dbi_open", rc);
     }
 
     rc = mdb_txn_commit(txn);
     if (rc != 0) {
         mdb_env_close(env);
-        RAISE(lmdbQ_LMDBError, to$str(mdb_strerror(rc)));
+        raise_lmdb_error("mdb_txn_commit(open)", rc);
     }
 
     // Get max key size for this environment
@@ -90,7 +115,7 @@ B_tuple lmdbQ_U__env_create_and_open(B_str path, int64_t max_size) {
     return $NEWTUPLE(3, to$int((intptr_t)env), to$int((int)dbi), to$int(max_key_size));
 }
 
-B_NoneType lmdbQ_U_1_put(int64_t env_ptr, int64_t dbi, B_bytes key, B_bytes value) {
+B_NoneType lmdbQ_U_2_put(int64_t env_ptr, int64_t dbi, B_bytes key, B_bytes value) {
     MDB_env *env = (MDB_env*)(intptr_t)env_ptr;
     MDB_txn *txn;
     MDB_val mkey, mval;
@@ -98,7 +123,7 @@ B_NoneType lmdbQ_U_1_put(int64_t env_ptr, int64_t dbi, B_bytes key, B_bytes valu
 
     rc = mdb_txn_begin(env, NULL, 0, &txn);
     if (rc != 0) {
-        RAISE(lmdbQ_LMDBError, to$str(mdb_strerror(rc)));
+        raise_lmdb_error("mdb_txn_begin(put)", rc);
     }
 
     mkey.mv_size = key->nbytes;
@@ -109,18 +134,18 @@ B_NoneType lmdbQ_U_1_put(int64_t env_ptr, int64_t dbi, B_bytes key, B_bytes valu
     rc = mdb_put(txn, (MDB_dbi)dbi, &mkey, &mval, 0);
     if (rc != 0) {
         mdb_txn_abort(txn);
-        RAISE(lmdbQ_LMDBError, to$str(mdb_strerror(rc)));
+        raise_lmdb_error("mdb_put", rc);
     }
 
     rc = mdb_txn_commit(txn);
     if (rc != 0) {
-        RAISE(lmdbQ_LMDBError, to$str(mdb_strerror(rc)));
+        raise_lmdb_error("mdb_txn_commit(put)", rc);
     }
 
     return B_None;
 }
 
-B_bytes lmdbQ_U_2_get(int64_t env_ptr, int64_t dbi, B_bytes key) {
+B_bytes lmdbQ_U_3_get(int64_t env_ptr, int64_t dbi, B_bytes key) {
     MDB_env *env = (MDB_env*)(intptr_t)env_ptr;
     MDB_txn *txn;
     MDB_val mkey, mval;
@@ -128,7 +153,7 @@ B_bytes lmdbQ_U_2_get(int64_t env_ptr, int64_t dbi, B_bytes key) {
 
     rc = mdb_txn_begin(env, NULL, MDB_RDONLY, &txn);
     if (rc != 0) {
-        RAISE(lmdbQ_LMDBError, to$str(mdb_strerror(rc)));
+        raise_lmdb_error("mdb_txn_begin(get)", rc);
     }
 
     mkey.mv_size = key->nbytes;
@@ -141,7 +166,7 @@ B_bytes lmdbQ_U_2_get(int64_t env_ptr, int64_t dbi, B_bytes key) {
         return (B_bytes)B_None;
     } else if (rc != 0) {
         mdb_txn_abort(txn);  // Safe to abort when error occurred
-        RAISE(lmdbQ_LMDBError, to$str(mdb_strerror(rc)));
+        raise_lmdb_error("mdb_get", rc);
     }
 
     // Copy the data BEFORE aborting the transaction
@@ -150,7 +175,7 @@ B_bytes lmdbQ_U_2_get(int64_t env_ptr, int64_t dbi, B_bytes key) {
     return result;
 }
 
-B_bool lmdbQ_U_3_delete(int64_t env_ptr, int64_t dbi, B_bytes key) {
+B_bool lmdbQ_U_4_delete(int64_t env_ptr, int64_t dbi, B_bytes key) {
     MDB_env *env = (MDB_env*)(intptr_t)env_ptr;
     MDB_txn *txn;
     MDB_val mkey;
@@ -158,7 +183,7 @@ B_bool lmdbQ_U_3_delete(int64_t env_ptr, int64_t dbi, B_bytes key) {
 
     rc = mdb_txn_begin(env, NULL, 0, &txn);
     if (rc != 0) {
-        RAISE(lmdbQ_LMDBError, to$str(mdb_strerror(rc)));
+        raise_lmdb_error("mdb_txn_begin(delete)", rc);
     }
 
     mkey.mv_size = key->nbytes;
@@ -170,25 +195,25 @@ B_bool lmdbQ_U_3_delete(int64_t env_ptr, int64_t dbi, B_bytes key) {
         return B_False;
     } else if (rc != 0) {
         mdb_txn_abort(txn);
-        RAISE(lmdbQ_LMDBError, to$str(mdb_strerror(rc)));
+        raise_lmdb_error("mdb_del", rc);
     }
 
     rc = mdb_txn_commit(txn);
     if (rc != 0) {
-        RAISE(lmdbQ_LMDBError, to$str(mdb_strerror(rc)));
+        raise_lmdb_error("mdb_txn_commit(delete)", rc);
     }
 
     return B_True;
 }
 
-B_NoneType lmdbQ_U_4_close(int64_t env_ptr, int64_t dbi) {
+B_NoneType lmdbQ_U_5_close(int64_t env_ptr, int64_t dbi) {
     MDB_env *env = (MDB_env*)(intptr_t)env_ptr;
     // Force a synchronous flush to disk before closing
     int rc = mdb_env_sync(env, 1);
     if (rc != 0) {
         // Even if sync fails, we still close the environment
         mdb_env_close(env);
-        RAISE(lmdbQ_LMDBError, to$str(mdb_strerror(rc)));
+        raise_lmdb_error("mdb_env_sync", rc);
     }
     // Note: mdb_dbi_close is typically not needed for the default database
     // and closing the environment closes all databases
@@ -198,42 +223,42 @@ B_NoneType lmdbQ_U_4_close(int64_t env_ptr, int64_t dbi) {
 
 // Transaction functions
 
-int64_t lmdbQ_U_5_txn_begin_read(int64_t env_ptr) {
+int64_t lmdbQ_U_6_txn_begin_read(int64_t env_ptr) {
     MDB_env *env = (MDB_env*)(intptr_t)env_ptr;
     MDB_txn *txn;
     int rc = mdb_txn_begin(env, NULL, MDB_RDONLY, &txn);
     if (rc != 0) {
-        RAISE(lmdbQ_LMDBError, to$str(mdb_strerror(rc)));
+        raise_lmdb_error("mdb_txn_begin(read)", rc);
     }
     return (int64_t)(intptr_t)txn;
 }
 
-int64_t lmdbQ_U_6_txn_begin_write(int64_t env_ptr) {
+int64_t lmdbQ_U_7_txn_begin_write(int64_t env_ptr) {
     MDB_env *env = (MDB_env*)(intptr_t)env_ptr;
     MDB_txn *txn;
     int rc = mdb_txn_begin(env, NULL, 0, &txn);
     if (rc != 0) {
-        RAISE(lmdbQ_LMDBError, to$str(mdb_strerror(rc)));
+        raise_lmdb_error("mdb_txn_begin(write)", rc);
     }
     return (int64_t)(intptr_t)txn;
 }
 
-B_NoneType lmdbQ_U_7_txn_commit(int64_t txn_ptr) {
+B_NoneType lmdbQ_U_8_txn_commit(int64_t txn_ptr) {
     MDB_txn *txn = (MDB_txn*)(intptr_t)txn_ptr;
     int rc = mdb_txn_commit(txn);
     if (rc != 0) {
-        RAISE(lmdbQ_LMDBError, to$str(mdb_strerror(rc)));
+        raise_lmdb_error("mdb_txn_commit", rc);
     }
     return B_None;
 }
 
-B_NoneType lmdbQ_U_8_txn_abort(int64_t txn_ptr) {
+B_NoneType lmdbQ_U_9_txn_abort(int64_t txn_ptr) {
     MDB_txn *txn = (MDB_txn*)(intptr_t)txn_ptr;
     mdb_txn_abort(txn);
     return B_None;
 }
 
-B_NoneType lmdbQ_U_9_txn_put(int64_t txn_ptr, int64_t dbi, B_bytes key, B_bytes value) {
+B_NoneType lmdbQ_U_10_txn_put(int64_t txn_ptr, int64_t dbi, B_bytes key, B_bytes value) {
     MDB_txn *txn = (MDB_txn*)(intptr_t)txn_ptr;
     MDB_val mkey, mval;
 
@@ -244,12 +269,12 @@ B_NoneType lmdbQ_U_9_txn_put(int64_t txn_ptr, int64_t dbi, B_bytes key, B_bytes 
 
     int rc = mdb_put(txn, (MDB_dbi)dbi, &mkey, &mval, 0);
     if (rc != 0) {
-        RAISE(lmdbQ_LMDBError, to$str(mdb_strerror(rc)));
+        raise_lmdb_error("mdb_put(txn)", rc);
     }
     return B_None;
 }
 
-B_bytes lmdbQ_U_10_txn_get(int64_t txn_ptr, int64_t dbi, B_bytes key) {
+B_bytes lmdbQ_U_11_txn_get(int64_t txn_ptr, int64_t dbi, B_bytes key) {
     MDB_txn *txn = (MDB_txn*)(intptr_t)txn_ptr;
     MDB_val mkey, mval;
 
@@ -260,14 +285,14 @@ B_bytes lmdbQ_U_10_txn_get(int64_t txn_ptr, int64_t dbi, B_bytes key) {
     if (rc == MDB_NOTFOUND) {
         return (B_bytes)B_None;
     } else if (rc != 0) {
-        RAISE(lmdbQ_LMDBError, to$str(mdb_strerror(rc)));
+        raise_lmdb_error("mdb_get(txn)", rc);
     }
 
     // Copy the data to return
     return to$bytesD_len(mval.mv_data, mval.mv_size);
 }
 
-B_bool lmdbQ_U_11_txn_delete(int64_t txn_ptr, int64_t dbi, B_bytes key) {
+B_bool lmdbQ_U_12_txn_delete(int64_t txn_ptr, int64_t dbi, B_bytes key) {
     MDB_txn *txn = (MDB_txn*)(intptr_t)txn_ptr;
     MDB_val mkey;
 
@@ -278,31 +303,33 @@ B_bool lmdbQ_U_11_txn_delete(int64_t txn_ptr, int64_t dbi, B_bytes key) {
     if (rc == MDB_NOTFOUND) {
         return B_False;
     } else if (rc != 0) {
-        RAISE(lmdbQ_LMDBError, to$str(mdb_strerror(rc)));
+        raise_lmdb_error("mdb_del(txn)", rc);
     }
     return B_True;
 }
 
 // Cursor functions
 
-int64_t lmdbQ_U_12_cursor_open(int64_t txn_ptr, int64_t dbi) {
+int64_t lmdbQ_U_13_cursor_open(int64_t txn_ptr, int64_t dbi) {
     MDB_txn *txn = (MDB_txn*)(intptr_t)txn_ptr;
     MDB_cursor *cursor;
 
     int rc = mdb_cursor_open(txn, (MDB_dbi)dbi, &cursor);
     if (rc != 0) {
-        RAISE(lmdbQ_LMDBError, to$str(mdb_strerror(rc)));
+        raise_lmdb_error("mdb_cursor_open", rc);
     }
     return (int64_t)(intptr_t)cursor;
 }
 
-B_NoneType lmdbQ_U_13_cursor_close(int64_t cursor_ptr) {
+B_NoneType lmdbQ_U_14_cursor_close(int64_t cursor_ptr) {
     MDB_cursor *cursor = (MDB_cursor*)(intptr_t)cursor_ptr;
-    mdb_cursor_close(cursor);
+    if (cursor != NULL) {
+        mdb_cursor_close(cursor);
+    }
     return B_None;
 }
 
-B_tuple lmdbQ_U_14_cursor_first(int64_t cursor_ptr) {
+B_tuple lmdbQ_U_15_cursor_first(int64_t cursor_ptr) {
     MDB_cursor *cursor = (MDB_cursor*)(intptr_t)cursor_ptr;
     MDB_val key, val;
 
@@ -310,14 +337,14 @@ B_tuple lmdbQ_U_14_cursor_first(int64_t cursor_ptr) {
     if (rc == MDB_NOTFOUND) {
         return (B_tuple)B_None;
     } else if (rc != 0) {
-        RAISE(lmdbQ_LMDBError, to$str(mdb_strerror(rc)));
+        raise_lmdb_error("mdb_cursor_get(first)", rc);
     }
 
     return $NEWTUPLE(2, to$bytesD_len(key.mv_data, key.mv_size),
                         to$bytesD_len(val.mv_data, val.mv_size));
 }
 
-B_tuple lmdbQ_U_15_cursor_last(int64_t cursor_ptr) {
+B_tuple lmdbQ_U_16_cursor_last(int64_t cursor_ptr) {
     MDB_cursor *cursor = (MDB_cursor*)(intptr_t)cursor_ptr;
     MDB_val key, val;
 
@@ -325,14 +352,14 @@ B_tuple lmdbQ_U_15_cursor_last(int64_t cursor_ptr) {
     if (rc == MDB_NOTFOUND) {
         return (B_tuple)B_None;
     } else if (rc != 0) {
-        RAISE(lmdbQ_LMDBError, to$str(mdb_strerror(rc)));
+        raise_lmdb_error("mdb_cursor_get(last)", rc);
     }
 
     return $NEWTUPLE(2, to$bytesD_len(key.mv_data, key.mv_size),
                         to$bytesD_len(val.mv_data, val.mv_size));
 }
 
-B_tuple lmdbQ_U_16_cursor_next(int64_t cursor_ptr) {
+B_tuple lmdbQ_U_17_cursor_next(int64_t cursor_ptr) {
     MDB_cursor *cursor = (MDB_cursor*)(intptr_t)cursor_ptr;
     MDB_val key, val;
 
@@ -340,14 +367,14 @@ B_tuple lmdbQ_U_16_cursor_next(int64_t cursor_ptr) {
     if (rc == MDB_NOTFOUND) {
         return (B_tuple)B_None;
     } else if (rc != 0) {
-        RAISE(lmdbQ_LMDBError, to$str(mdb_strerror(rc)));
+        raise_lmdb_error("mdb_cursor_get(next)", rc);
     }
 
     return $NEWTUPLE(2, to$bytesD_len(key.mv_data, key.mv_size),
                         to$bytesD_len(val.mv_data, val.mv_size));
 }
 
-B_tuple lmdbQ_U_17_cursor_prev(int64_t cursor_ptr) {
+B_tuple lmdbQ_U_18_cursor_prev(int64_t cursor_ptr) {
     MDB_cursor *cursor = (MDB_cursor*)(intptr_t)cursor_ptr;
     MDB_val key, val;
 
@@ -355,14 +382,14 @@ B_tuple lmdbQ_U_17_cursor_prev(int64_t cursor_ptr) {
     if (rc == MDB_NOTFOUND) {
         return (B_tuple)B_None;
     } else if (rc != 0) {
-        RAISE(lmdbQ_LMDBError, to$str(mdb_strerror(rc)));
+        raise_lmdb_error("mdb_cursor_get(prev)", rc);
     }
 
     return $NEWTUPLE(2, to$bytesD_len(key.mv_data, key.mv_size),
                         to$bytesD_len(val.mv_data, val.mv_size));
 }
 
-B_tuple lmdbQ_U_18_cursor_seek(int64_t cursor_ptr, B_bytes seek_key) {
+B_tuple lmdbQ_U_19_cursor_seek(int64_t cursor_ptr, B_bytes seek_key) {
     MDB_cursor *cursor = (MDB_cursor*)(intptr_t)cursor_ptr;
     MDB_val key, val;
 
@@ -374,14 +401,14 @@ B_tuple lmdbQ_U_18_cursor_seek(int64_t cursor_ptr, B_bytes seek_key) {
     if (rc == MDB_NOTFOUND) {
         return (B_tuple)B_None;
     } else if (rc != 0) {
-        RAISE(lmdbQ_LMDBError, to$str(mdb_strerror(rc)));
+        raise_lmdb_error("mdb_cursor_get(seek)", rc);
     }
 
     return $NEWTUPLE(2, to$bytesD_len(key.mv_data, key.mv_size),
                         to$bytesD_len(val.mv_data, val.mv_size));
 }
 
-B_tuple lmdbQ_U_19_cursor_seek_prefix(int64_t cursor_ptr, B_bytes prefix) {
+B_tuple lmdbQ_U_20_cursor_seek_prefix(int64_t cursor_ptr, B_bytes prefix) {
     MDB_cursor *cursor = (MDB_cursor*)(intptr_t)cursor_ptr;
     MDB_val key, val;
 
@@ -393,7 +420,7 @@ B_tuple lmdbQ_U_19_cursor_seek_prefix(int64_t cursor_ptr, B_bytes prefix) {
     if (rc == MDB_NOTFOUND) {
         return (B_tuple)B_None;
     } else if (rc != 0) {
-        RAISE(lmdbQ_LMDBError, to$str(mdb_strerror(rc)));
+        raise_lmdb_error("mdb_cursor_get(seek_prefix)", rc);
     }
 
     // Check if the key starts with the prefix
@@ -406,7 +433,7 @@ B_tuple lmdbQ_U_19_cursor_seek_prefix(int64_t cursor_ptr, B_bytes prefix) {
     return (B_tuple)B_None;
 }
 
-B_NoneType lmdbQ_U_20_cursor_put(int64_t cursor_ptr, B_bytes key, B_bytes value) {
+B_NoneType lmdbQ_U_21_cursor_put(int64_t cursor_ptr, B_bytes key, B_bytes value) {
     MDB_cursor *cursor = (MDB_cursor*)(intptr_t)cursor_ptr;
     MDB_val mkey, mval;
 
@@ -417,17 +444,17 @@ B_NoneType lmdbQ_U_20_cursor_put(int64_t cursor_ptr, B_bytes key, B_bytes value)
 
     int rc = mdb_cursor_put(cursor, &mkey, &mval, 0);
     if (rc != 0) {
-        RAISE(lmdbQ_LMDBError, to$str(mdb_strerror(rc)));
+        raise_lmdb_error("mdb_cursor_put", rc);
     }
     return B_None;
 }
 
-B_NoneType lmdbQ_U_21_cursor_delete(int64_t cursor_ptr) {
+B_NoneType lmdbQ_U_22_cursor_delete(int64_t cursor_ptr) {
     MDB_cursor *cursor = (MDB_cursor*)(intptr_t)cursor_ptr;
 
     int rc = mdb_cursor_del(cursor, 0);
     if (rc != 0) {
-        RAISE(lmdbQ_LMDBError, to$str(mdb_strerror(rc)));
+        raise_lmdb_error("mdb_cursor_del", rc);
     }
     return B_None;
 }

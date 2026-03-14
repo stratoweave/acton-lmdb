@@ -7,7 +7,6 @@ same DB multiple times.
 """
 import file
 import testing
-import random
 
 class LMDBError(Exception):
     pass
@@ -46,6 +45,7 @@ actor Db(cap: file.WriteFileCap, path: str, max_size: int=10485760):
     var _dbi: int = 0  # Will hold database handle
     var _max_key_size: int = 0  # Maximum allowed key size
     var _is_open: bool = False
+    var _read_txn_count: int = 0
     var _write_txn_active: bool = False  # Track if write transaction is active
 
     def open():
@@ -62,6 +62,8 @@ actor Db(cap: file.WriteFileCap, path: str, max_size: int=10485760):
     def put(key: bytes, value: bytes) -> None:
         if not _is_open:
             raise LMDBError("Database is closed")
+        if _write_txn_active:
+            raise LMDBError("Cannot use Db.put while write transaction is active")
         if len(key) > _max_key_size:
             raise LMDBKeySizeError(key, _max_key_size)
         _put(_env, _dbi, key, value)
@@ -76,12 +78,16 @@ actor Db(cap: file.WriteFileCap, path: str, max_size: int=10485760):
     def delete(key: bytes) -> bool:
         if not _is_open:
             raise LMDBError("Database is closed")
+        if _write_txn_active:
+            raise LMDBError("Cannot use Db.delete while write transaction is active")
         if len(key) > _max_key_size:
             raise LMDBKeySizeError(key, _max_key_size)
         return _delete(_env, _dbi, key)
 
     def close():
         if _is_open:
+            if _read_txn_count > 0 or _write_txn_active:
+                raise LMDBError("Cannot close database while transactions are active")
             _close(_env, _dbi)
             _is_open = False
 
@@ -91,7 +97,17 @@ actor Db(cap: file.WriteFileCap, path: str, max_size: int=10485760):
     def begin_read() -> ReadTransaction:
         if not _is_open:
             raise LMDBError("Database is closed")
-        return ReadTransaction(_env, _dbi)
+        _read_txn_count += 1
+
+        def release_txn():
+            if _read_txn_count > 0:
+                _read_txn_count -= 1
+
+        try:
+            return ReadTransaction(_env, _dbi, release_txn)
+        except Exception as e:
+            release_txn()
+            raise e
 
     def begin_write() -> WriteTransaction:
         """Begin a read-write transaction
@@ -106,18 +122,24 @@ actor Db(cap: file.WriteFileCap, path: str, max_size: int=10485760):
         def release_txn():
             _write_txn_active = False
 
-        return WriteTransaction(_env, _dbi, _max_key_size, release_txn)
+        try:
+            return WriteTransaction(_env, _dbi, _max_key_size, release_txn)
+        except Exception as e:
+            release_txn()
+            raise e
 
     def get_max_key_size() -> int:
         return _max_key_size
 
-actor ReadTransaction(env: int, dbi: int):
+actor ReadTransaction(env: int, dbi: int, release_fn: action() -> None):
     """Read-only transaction - multiple allowed concurrently
     """
     var _txn: int = 0
     var _committed: bool = False
     var _aborted: bool = False
     var _dbi: int = dbi
+    var _release_fn: action() -> None = release_fn
+    var _released: bool = False
     var _cursors: list[ReadCursor] = []
 
     _txn = _txn_begin_read(env)
@@ -134,35 +156,55 @@ actor ReadTransaction(env: int, dbi: int):
         _cursors.append(c)
         return c
 
+    def _release_once():
+        if _released:
+            return
+        _released = True
+        await async _release_fn()
+
+    def _close_cursors():
+        msgs = []
+        for c in _cursors:
+            msg = async c.close()
+            msgs.append(msg)
+        for msg in msgs:
+            await msg
+        _cursors = []
+
     def commit():
         if _committed:
             return # Idempotent noop
         if _aborted:
             raise LMDBError("Transaction already aborted")
-        # Invalidate all cursors before committing
-        msgs = []
-        for c in _cursors:
-            msg = async c.mark_invalid()
-            msgs.append(msg)
-        for msg in msgs:
-            await msg
-        _txn_commit(_txn)
-        _committed = True
+        commit_started = False
+        try:
+            _close_cursors()
+            commit_started = True
+            _txn_commit(_txn)
+            _committed = True
+        except Exception as e:
+            if not commit_started:
+                _txn_abort(_txn)
+            _aborted = True
+            _release_once()
+            raise e
+        _release_once()
 
     def abort():
         if _aborted:
             return # Idempotent noop
         if _committed:
             raise LMDBError("Transaction already committed")
-        # Invalidate all cursors before aborting
-        msgs = []
-        for c in _cursors:
-            msg = async c.mark_invalid()
-            msgs.append(msg)
-        for msg in msgs:
-            await msg
+        try:
+            _close_cursors()
+        except Exception as e:
+            _txn_abort(_txn)
+            _aborted = True
+            _release_once()
+            raise e
         _txn_abort(_txn)
         _aborted = True
+        _release_once()
 
     def __cleanup__():
         if not _committed and not _aborted:
@@ -176,7 +218,13 @@ actor WriteTransaction(env: int, dbi: int, max_key_size: int, release_fn: action
     var _dbi: int = dbi
     var _max_key_size: int = max_key_size
     var _release_fn: action() -> None = release_fn
+    var _released: bool = False
     var _cursors: list[WriteCursor] = []
+    var _affinity_wtid: int = 0
+
+    proc def _pin_affinity() -> int:
+        NotImplemented
+    _affinity_wtid = _pin_affinity()
 
     _txn = _txn_begin_write(env)
 
@@ -204,41 +252,59 @@ actor WriteTransaction(env: int, dbi: int, max_key_size: int, release_fn: action
     def cursor() -> WriteCursor:
         if _committed or _aborted:
             raise LMDBError("Transaction already finished")
-        c = WriteCursor(_txn, _dbi)
+        c = WriteCursor(_txn, _dbi, _affinity_wtid)
         _cursors.append(c)
         return c
+
+    def _release_once():
+        if _released:
+            return
+        _released = True
+        await async _release_fn()
+
+    def _close_cursors():
+        msgs = []
+        for c in _cursors:
+            msg = async c.close()
+            msgs.append(msg)
+        for msg in msgs:
+            await msg
+        _cursors = []
 
     def commit():
         if _committed:
             return # Idempotent noop
         if _aborted:
             raise LMDBError("Transaction already aborted")
-        # Invalidate all cursors before committing
-        msgs = []
-        for c in _cursors:
-            msg = async c.mark_invalid()
-            msgs.append(msg)
-        for msg in msgs:
-            await msg
-        _txn_commit(_txn)
-        _committed = True
-        _release_fn()
+        commit_started = False
+        try:
+            _close_cursors()
+            commit_started = True
+            _txn_commit(_txn)
+            _committed = True
+        except Exception as e:
+            if not commit_started:
+                _txn_abort(_txn)
+            _aborted = True
+            _release_once()
+            raise e
+        _release_once()
 
     def abort():
         if _aborted:
             return # Idempotent noop
         if _committed:
             raise LMDBError("Transaction already committed")
-        # Invalidate all cursors before aborting
-        msgs = []
-        for c in _cursors:
-            msg = async c.mark_invalid()
-            msgs.append(msg)
-        for msg in msgs:
-            await msg
+        try:
+            _close_cursors()
+        except Exception as e:
+            _txn_abort(_txn)
+            _aborted = True
+            _release_once()
+            raise e
         _txn_abort(_txn)
         _aborted = True
-        _release_fn()
+        _release_once()
 
     def __cleanup__():
         if not _committed and not _aborted:
@@ -251,9 +317,14 @@ actor ReadCursor(txn_ptr: int, dbi: int):
 
     _cursor = _cursor_open(txn_ptr, dbi)
 
-    def mark_invalid():
+    def close():
+        if _cursor != 0:
+            _cursor_close(_cursor)
+            _cursor = 0
         _valid = False
-        _cursor = 0
+
+    def mark_invalid():
+        close()
 
     def _check_valid():
         if not _valid:
@@ -283,20 +354,37 @@ actor ReadCursor(txn_ptr: int, dbi: int):
         _check_valid()
         return _cursor_seek_prefix(_cursor, prefix)
 
-actor WriteCursor(txn_ptr: int, dbi: int):
+    def __cleanup__():
+        close()
+
+actor WriteCursor(txn_ptr: int, dbi: int, affinity_wtid: int):
     """Cursor for read-write iteration and modification"""
     var _cursor: int = 0
+    var _txn_ptr: int = txn_ptr
+    var _dbi: int = dbi
     var _valid: bool = True
 
-    _cursor = _cursor_open(txn_ptr, dbi)
+    proc def _set_affinity(wtid: int) -> None:
+        NotImplemented
+    _set_affinity(affinity_wtid)
+
+    def _ensure_open():
+        if _cursor == 0:
+            _cursor = _cursor_open(_txn_ptr, _dbi)
+
+    def close():
+        if _cursor != 0:
+            _cursor_close(_cursor)
+            _cursor = 0
+        _valid = False
 
     def mark_invalid():
-        _valid = False
-        _cursor = 0
+        close()
 
     def _check_valid():
         if not _valid:
             raise LMDBError("Cursor is no longer valid - transaction has ended")
+        _ensure_open()
 
     def first() -> ?(key: bytes, value: bytes):
         _check_valid()
@@ -329,6 +417,9 @@ actor WriteCursor(txn_ptr: int, dbi: int):
     def delete():
         _check_valid()
         _cursor_delete(_cursor)
+
+    def __cleanup__():
+        close()
 
 
 # C extension functions (implemented in lmdb.ext.c)
@@ -401,9 +492,17 @@ def _cursor_delete(cursor: int) -> None:
 
 
 actor _test_db_basic_operations(t: testing.EnvT):
-    db_path = "/tmp/test_lmdb_basic_" + str(random.randint(100000, 999999))
+    """Verify basic put/get/delete behavior for present and missing keys.
 
-    wfcap = file.WriteFileCap(file.FileCap(t.env.cap))
+    The test writes a key, reads it back, updates it, deletes it, and then
+    probes both existing and non-existing keys. The hypothesis is that the
+    simplest Db operations should round-trip values exactly and should report
+    absence cleanly instead of returning stale data or raising unexpectedly.
+    """
+    fc = file.FileCap(t.env.cap)
+    fs = file.FS(fc)
+    db_path = fs.mktmpdir("test_lmdb_basic_")
+    wfcap = file.WriteFileCap(fc)
     db = Db(wfcap, db_path)
 
     db.put(b"key1", b"value1")
@@ -427,16 +526,23 @@ actor _test_db_basic_operations(t: testing.EnvT):
     testing.assertEqual(existed, False, "Delete should return False for non-existent key")
 
     await async db.close()
-    fs = file.FS(file.FileCap(t.env.cap))
     await async fs.rmtree(db_path)
     await async fs.rmdir(db_path)
 
     t.success()
 
 actor _test_db_multiple_keys(t: testing.EnvT):
-    db_path = "/tmp/test_lmdb_multi_" + str(random.randint(100000, 999999))
+    """Verify that multiple distinct keys can be stored and retrieved independently.
 
-    wfcap = file.WriteFileCap(file.FileCap(t.env.cap))
+    The test inserts a small set of distinct key/value pairs and then reads each
+    one back individually. The hypothesis is that neighboring inserts do not
+    alias, overwrite, or otherwise corrupt one another when many keys share the
+    same database.
+    """
+    fc = file.FileCap(t.env.cap)
+    fs = file.FS(fc)
+    db_path = fs.mktmpdir("test_lmdb_multi_")
+    wfcap = file.WriteFileCap(fc)
     db = Db(wfcap, db_path)
 
     for i in range(10):
@@ -451,20 +557,26 @@ actor _test_db_multiple_keys(t: testing.EnvT):
         testing.assertEqual(value, expected, "Should retrieve correct value for key " + str(i))
 
     await async db.close()
-    fs = file.FS(file.FileCap(t.env.cap))
     await async fs.rmtree(db_path)
     await async fs.rmdir(db_path)
 
     t.success()
 
 actor _test_db_persistence(t: testing.EnvT):
-    unique_id = str(random.randint(100000000, 999999999))
-    db_path = "/tmp/test_lmdb_persist_" + unique_id
+    """Verify that committed data survives closing and reopening the database.
 
-    wfcap = file.WriteFileCap(file.FileCap(t.env.cap))
+    The test writes through one Db instance, closes it, opens a fresh instance
+    on the same path, and then reads the same key back. The hypothesis is that
+    a committed write is persisted by LMDB and not just kept in process-local
+    state tied to a single actor instance.
+    """
+    fc = file.FileCap(t.env.cap)
+    fs = file.FS(fc)
+    db_path = fs.mktmpdir("test_lmdb_persist_")
+    wfcap = file.WriteFileCap(fc)
 
     db1 = Db(wfcap, db_path)
-    db1.put(b"persistent_key", b"persistent_value")
+    await async db1.put(b"persistent_key", b"persistent_value")
     await async db1.close()
 
     # Reopen and verify data is still there
@@ -475,16 +587,23 @@ actor _test_db_persistence(t: testing.EnvT):
     testing.assertEqual(value, b"persistent_value", "Data should persist after close and reopen")
 
     await async db2.close()
-    fs = file.FS(file.FileCap(t.env.cap))
     await async fs.rmtree(db_path)
     await async fs.rmdir(db_path)
 
     t.success()
 
 actor _test_db_large_values(t: testing.EnvT):
-    db_path = "/tmp/test_lmdb_large_" + str(random.randint(100000, 999999))
+    """Verify that LMDB can round-trip a large value without truncation or corruption.
 
-    wfcap = file.WriteFileCap(file.FileCap(t.env.cap))
+    The test stores a 1 MiB byte string and then checks both the returned length
+    and the exact content. The hypothesis is that large values remain intact
+    across the binding boundary and are not clipped, partially copied, or
+    mutated during retrieval.
+    """
+    fc = file.FileCap(t.env.cap)
+    fs = file.FS(fc)
+    db_path = fs.mktmpdir("test_lmdb_large_")
+    wfcap = file.WriteFileCap(fc)
     db = Db(wfcap, db_path)
 
     # Create a 1MB value
@@ -498,17 +617,23 @@ actor _test_db_large_values(t: testing.EnvT):
         testing.assertEqual(retrieved, large_value, "Large value should match")
 
     await async db.close()
-    fs = file.FS(file.FileCap(t.env.cap))
     await async fs.rmtree(db_path)
     await async fs.rmdir(db_path)
 
     t.success()
 
 actor _test_db_binary_data(t: testing.EnvT):
-    """Test with binary data including null bytes"""
-    db_path = "/tmp/test_lmdb_binary_" + str(random.randint(100000, 999999))
+    """Verify that binary keys and values, including null bytes, round-trip correctly.
 
-    wfcap = file.WriteFileCap(file.FileCap(t.env.cap))
+    The test uses a key and value containing embedded NUL bytes and a 0xff byte,
+    writes them, and reads them back verbatim. The hypothesis is that the
+    binding treats keys and values as length-delimited byte buffers rather than
+    C strings, so binary payloads should survive unchanged.
+    """
+    fc = file.FileCap(t.env.cap)
+    fs = file.FS(fc)
+    db_path = fs.mktmpdir("test_lmdb_binary_")
+    wfcap = file.WriteFileCap(fc)
     db = Db(wfcap, db_path)
 
     binary_key = b"\x00\x01\x02\x03\xff"
@@ -521,16 +646,24 @@ actor _test_db_binary_data(t: testing.EnvT):
 
     # Clean up
     await async db.close()
-    fs = file.FS(file.FileCap(t.env.cap))
     await async fs.rmtree(db_path)
     await async fs.rmdir(db_path)
 
     t.success()
 
 actor _test_transactions(t: testing.EnvT):
-    db_path = "/tmp/test_lmdb_txn_" + str(random.randint(100000, 999999))
+    """Verify write-transaction commit, abort, and in-transaction reads.
 
-    wfcap = file.WriteFileCap(file.FileCap(t.env.cap))
+    The test writes inside an explicit transaction, reads one of those writes
+    before commit, commits, and then verifies persistence from the Db API. It
+    then repeats with abort and expects the written key to disappear. The
+    hypothesis is that commit makes writes durable, abort discards them, and a
+    write transaction can observe its own pending changes.
+    """
+    fc = file.FileCap(t.env.cap)
+    fs = file.FS(fc)
+    db_path = fs.mktmpdir("test_lmdb_txn_")
+    wfcap = file.WriteFileCap(fc)
     db = Db(wfcap, db_path)
 
     # Test write transaction
@@ -560,15 +693,22 @@ actor _test_transactions(t: testing.EnvT):
     testing.assertEqual(aborted, None, "Aborted transaction should not persist")
 
     await async db.close()
-    fs = file.FS(file.FileCap(t.env.cap))
     await async fs.rmtree(db_path)
     await async fs.rmdir(db_path)
     t.success()
 
 actor _test_cursors(t: testing.EnvT):
-    db_path = "/tmp/test_lmdb_cursor_" + str(random.randint(100000, 999999))
+    """Verify read-cursor iteration order and prefix-seek behavior.
 
-    wfcap = file.WriteFileCap(file.FileCap(t.env.cap))
+    The test seeds lexicographically ordered keys, opens a read cursor, and
+    probes `first`, `next`, and `seek_prefix`. The hypothesis is that cursor
+    traversal reflects LMDB key order and that prefix seeks land on the first
+    matching key instead of an unrelated position.
+    """
+    fc = file.FileCap(t.env.cap)
+    fs = file.FS(fc)
+    db_path = fs.mktmpdir("test_lmdb_cursor_")
+    wfcap = file.WriteFileCap(fc)
     db = Db(wfcap, db_path)
 
     # Some test data
@@ -604,17 +744,22 @@ actor _test_cursors(t: testing.EnvT):
     await async read_txn.commit()
 
     await async db.close()
-    fs = file.FS(file.FileCap(t.env.cap))
     await async fs.rmtree(db_path)
     await async fs.rmdir(db_path)
     t.success()
 
 actor _test_cursor_persistence(t: testing.EnvT):
-    """Test that cursors can read data persisted by a different Db instance"""
-    unique_id = str(random.randint(100000000, 999999999))
-    db_path = "/tmp/test_lmdb_cursor_persist_" + unique_id
+    """Verify that a cursor can read data written by an earlier Db instance.
 
-    wfcap = file.WriteFileCap(file.FileCap(t.env.cap))
+    The test writes a mix of direct and transactional data through one Db
+    instance, closes it, reopens the same path, and then scans with a cursor.
+    The hypothesis is that persisted state is fully visible to later readers,
+    including cursor iteration and prefix searches, not just direct `get`.
+    """
+    fc = file.FileCap(t.env.cap)
+    fs = file.FS(fc)
+    db_path = fs.mktmpdir("test_lmdb_cursor_persist_")
+    wfcap = file.WriteFileCap(fc)
 
     # Phase 1: Write data with first Db instance
     db1 = Db(wfcap, db_path)
@@ -668,7 +813,208 @@ actor _test_cursor_persistence(t: testing.EnvT):
     await async db2.close()
 
     # Clean up
-    fs = file.FS(file.FileCap(t.env.cap))
+    await async fs.rmtree(db_path)
+    await async fs.rmdir(db_path)
+    t.success()
+
+actor _test_write_path_guard_while_txn_active(t: testing.EnvT):
+    """Verify that direct Db writes are blocked while an explicit write transaction is active.
+
+    The test opens an explicit write transaction, performs a transactional write,
+    and then probes `Db.put` and `Db.delete` while that transaction is still
+    live. Both calls are expected to raise because the direct Db write path is
+    supposed to be unavailable until the explicit transaction commits or aborts.
+    The test then commits and verifies that the direct path becomes usable again.
+    """
+    fc = file.FileCap(t.env.cap)
+    fs = file.FS(fc)
+    db_path = fs.mktmpdir("test_lmdb_write_guard_")
+    wfcap = file.WriteFileCap(fc)
+    db = Db(wfcap, db_path)
+
+    txn = db.begin_write()
+    await async txn.put(b"a", b"1")
+
+    put_guarded = False
+    try:
+        await async db.put(b"b", b"2")
+    except LMDBError:
+        put_guarded = True
+    testing.assertTrue(put_guarded, "Db.put should fail while explicit write transaction is active")
+
+    delete_guarded = False
+    try:
+        await async db.delete(b"a")
+    except LMDBError:
+        delete_guarded = True
+    testing.assertTrue(delete_guarded, "Db.delete should fail while explicit write transaction is active")
+
+    await async txn.commit()
+    await async db.put(b"after", b"ok")
+    testing.assertEqual(db.get(b"after"), b"ok", "Write path should be available after commit")
+
+    await async db.close()
+    await async fs.rmtree(db_path)
+    await async fs.rmdir(db_path)
+    t.success()
+
+actor _test_close_fails_with_active_transactions(t: testing.EnvT):
+    """Verify that Db.close is rejected while read or write transactions are still active.
+
+    The test first opens a read transaction and then a write transaction,
+    attempting `Db.close` in each state before cleaning the transaction up. The
+    hypothesis is that closing the environment with live transactions is invalid
+    and must be rejected explicitly rather than silently racing or tearing down
+    state out from under active readers and writers.
+    """
+    fc = file.FileCap(t.env.cap)
+    fs = file.FS(fc)
+    db_path = fs.mktmpdir("test_lmdb_close_guard_")
+    wfcap = file.WriteFileCap(fc)
+    db = Db(wfcap, db_path)
+
+    read_txn = db.begin_read()
+    read_close_guarded = False
+    try:
+        await async db.close()
+    except LMDBError:
+        read_close_guarded = True
+    testing.assertTrue(read_close_guarded, "Db.close should fail while read transactions are active")
+    await async read_txn.abort()
+
+    write_txn = db.begin_write()
+    write_txn.put(b"k", b"v")
+    write_close_guarded = False
+    try:
+        await async db.close()
+    except LMDBError:
+        write_close_guarded = True
+    testing.assertTrue(write_close_guarded, "Db.close should fail while write transaction is active")
+    await async write_txn.abort()
+
+    await async db.close()
+    await async fs.rmtree(db_path)
+    await async fs.rmdir(db_path)
+    t.success()
+
+actor _test_cursor_invalid_after_transaction_end(t: testing.EnvT):
+    """Verify that cursors become unusable once their parent transaction has ended.
+
+    The test creates read and write cursors, ends the parent transaction, and
+    then probes `next` on the stale cursor handle. The hypothesis is that cursor
+    lifetime is strictly bounded by transaction lifetime, so using the cursor
+    after commit or abort should fail instead of touching invalid LMDB state.
+    """
+    fc = file.FileCap(t.env.cap)
+    fs = file.FS(fc)
+    db_path = fs.mktmpdir("test_lmdb_cursor_invalidation_")
+    wfcap = file.WriteFileCap(fc)
+    db = Db(wfcap, db_path)
+
+    db.put(b"k1", b"v1")
+    db.put(b"k2", b"v2")
+
+    read_txn = db.begin_read()
+    rc = read_txn.cursor()
+    testing.assertNotNone(rc.first(), "Read cursor should see first item")
+    await async read_txn.commit()
+
+    read_cursor_invalid = False
+    try:
+        await async rc.next()
+    except LMDBError:
+        read_cursor_invalid = True
+    testing.assertTrue(read_cursor_invalid, "Read cursor should be invalid after transaction commit")
+
+    write_txn = db.begin_write()
+    wc = write_txn.cursor()
+    testing.assertNotNone(wc.first(), "Write cursor should see first item")
+    await async write_txn.abort()
+
+    write_cursor_invalid = False
+    try:
+        await async wc.next()
+    except LMDBError:
+        write_cursor_invalid = True
+    testing.assertTrue(write_cursor_invalid, "Write cursor should be invalid after transaction abort")
+
+    await async db.close()
+    await async fs.rmtree(db_path)
+    await async fs.rmdir(db_path)
+    t.success()
+
+actor _test_write_txn_stress_release_and_affinity(t: testing.EnvT):
+    """Stress repeated write-transaction commit and abort paths for clean release semantics.
+
+    The test repeatedly creates explicit write transactions, commits some, aborts
+    others, and calls commit/abort idempotently a second time. It then verifies
+    which keys survived. The hypothesis is that write transactions release their
+    write-path ownership cleanly, preserve affinity-sensitive LMDB usage, and
+    remain safe under repeated completion calls.
+    """
+    fc = file.FileCap(t.env.cap)
+    fs = file.FS(fc)
+    db_path = fs.mktmpdir("test_lmdb_stress_")
+    wfcap = file.WriteFileCap(fc)
+    db = Db(wfcap, db_path)
+
+    # Keep each iteration short so stress mode with high --min-time can still
+    # complete inside the global timeout window (max_time + 1s).
+    for i in range(4):
+        key = b"c:" + str(i).encode()
+        txn_commit = db.begin_write()
+        txn_commit.put(key, b"ok")
+        await async txn_commit.commit()
+        await async txn_commit.commit()
+
+        txn_abort = db.begin_write()
+        txn_abort.put(b"a:" + str(i).encode(), b"drop")
+        await async txn_abort.abort()
+        await async txn_abort.abort()
+
+    for i in range(4):
+        key = b"c:" + str(i).encode()
+        testing.assertEqual(db.get(key), b"ok", "Committed keys should persist after stress loop")
+        testing.assertEqual(db.get(b"a:" + str(i).encode()), None, "Aborted keys should not persist after stress loop")
+
+    await async db.close()
+    await async fs.rmtree(db_path)
+    await async fs.rmdir(db_path)
+    t.success()
+
+actor _test_write_cursor_stress_with_explicit_write_transactions(t: testing.EnvT):
+    """Stress write-cursor updates inside explicit write transactions and verify visibility after commit.
+
+    The test repeatedly opens a write transaction, writes through a write cursor,
+    immediately seeks the same key, and then commits before checking visibility
+    from a later read cursor. The hypothesis is that write cursors operate on
+    the live transactional view and that committed cursor writes become visible
+    to subsequent readers without leaving cursor state behind.
+    """
+    fc = file.FileCap(t.env.cap)
+    fs = file.FS(fc)
+    db_path = fs.mktmpdir("test_lmdb_write_cursor_stress_")
+    wfcap = file.WriteFileCap(fc)
+    db = Db(wfcap, db_path)
+
+    for i in range(8):
+        txn = db.begin_write()
+        wc = txn.cursor()
+        key = b"wc:" + str(i).encode()
+        await async wc.put(key, b"value:" + str(i).encode())
+        found = wc.seek(key)
+        testing.assertNotNone(found, "Write cursor should find key it just wrote")
+        if found is not None:
+            testing.assertEqual(found.key, key, "Write cursor should seek exact key")
+        await async txn.commit()
+
+    read_txn = db.begin_read()
+    rc = read_txn.cursor()
+    item = rc.seek_prefix(b"wc:")
+    testing.assertNotNone(item, "Committed write-cursor keys should be visible")
+    await async read_txn.abort()
+
+    await async db.close()
     await async fs.rmtree(db_path)
     await async fs.rmdir(db_path)
     t.success()
