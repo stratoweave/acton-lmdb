@@ -2,7 +2,7 @@ name = "acton_lmdb"
 fingerprint = 0xf6ca91100767a811
 zig_dependencies = {
     "lmdb": (
-        url="https://github.com/orchestron-orchestrator/lmdb/archive/8adbb3620e5a714c19662c2e0394a3f4a3b3160e.tar.gz",
+        url="https://github.com/stratoweave/lmdb/archive/8adbb3620e5a714c19662c2e0394a3f4a3b3160e.tar.gz",
         hash="N-V-__8AAM_uCACF9Rjiq8EBk2vbJtl6_PZgbzELqA1Sbzk2",
         artifacts=["lmdb"]
     )
