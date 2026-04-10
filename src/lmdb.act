@@ -47,6 +47,7 @@ actor Db(cap: file.WriteFileCap, path: str, max_size: int=10485760):
     var _is_open: bool = False
     var _read_txn_count: int = 0
     var _write_txn_active: bool = False  # Track if write transaction is active
+    var _write_txn_waiters: list[action(?Exception, ?WriteTransaction) -> None] = []
 
     def open():
         if _is_open:
@@ -86,7 +87,7 @@ actor Db(cap: file.WriteFileCap, path: str, max_size: int=10485760):
 
     def close():
         if _is_open:
-            if _read_txn_count > 0 or _write_txn_active:
+            if _read_txn_count > 0 or _write_txn_active or len(_write_txn_waiters) > 0:
                 raise LMDBError("Cannot close database while transactions are active")
             _close(_env, _dbi)
             _is_open = False
@@ -109,24 +110,51 @@ actor Db(cap: file.WriteFileCap, path: str, max_size: int=10485760):
             release_txn()
             raise e
 
+    def _new_write_txn() -> WriteTransaction:
+        _write_txn_active = True
+
+        def release_txn():
+            _write_txn_active = False
+            _dispatch_waiting_write_txn()
+
+        try:
+            return WriteTransaction(_env, _dbi, _max_key_size, release_txn)
+        except Exception as e:
+            _write_txn_active = False
+            raise e
+
+    def _dispatch_waiting_write_txn() -> None:
+        if _is_open and not _write_txn_active and len(_write_txn_waiters) > 0:
+            done = _write_txn_waiters.pop(0)
+            try:
+                done(None, _new_write_txn())
+            except Exception as e:
+                done(e, None)
+                _dispatch_waiting_write_txn()
+
     def begin_write() -> WriteTransaction:
         """Begin a read-write transaction
         Only one allowed at a time, so the WriteTransaction must call release_txn
         """
         if not _is_open:
             raise LMDBError("Database is closed")
-        if _write_txn_active:
+        if _write_txn_active or len(_write_txn_waiters) > 0:
             raise LMDBError("Write transaction already active")
-        _write_txn_active = True
+        return _new_write_txn()
 
-        def release_txn():
-            _write_txn_active = False
+    def request_write(done: action(?Exception, ?WriteTransaction) -> None) -> None:
+        """Request a write transaction
 
-        try:
-            return WriteTransaction(_env, _dbi, _max_key_size, release_txn)
-        except Exception as e:
-            release_txn()
-            raise e
+        Requests are granted in FIFO order. If no writer is active, the callback
+        is invoked immediately with a fresh WriteTransaction. Otherwise it is
+        queued until the current writer commits or aborts. The callback is
+        invoked with either a WriteTransaction or an Exception.
+        """
+        if not _is_open:
+            done(LMDBError("Database is closed"), None)
+            return
+        _write_txn_waiters.append(done)
+        _dispatch_waiting_write_txn()
 
     def get_max_key_size() -> int:
         return _max_key_size
@@ -696,6 +724,62 @@ actor _test_transactions(t: testing.EnvT):
     await async fs.rmtree(db_path)
     await async fs.rmdir(db_path)
     t.success()
+
+actor _test_queued_write_requests(t: testing.EnvT):
+    """Verify that queued write requests are granted in FIFO order.
+
+    The test holds one explicit write transaction open, queues two later write
+    requests, and then commits the first writer. The hypothesis is that the
+    queued callbacks do not run early, and that each writer is handed out only
+    after the previous one commits, in the same order the requests were made.
+    """
+    fc = file.FileCap(t.env.cap)
+    fs = file.FS(fc)
+    db_path = fs.mktmpdir("test_lmdb_write_queue_")
+    wfcap = file.WriteFileCap(fc)
+    db = Db(wfcap, db_path)
+    txn1 = db.begin_write()
+    txn1.put(b"txn:001", b"one")
+    var events: list[str] = []
+
+    def writer3(err3: ?Exception, txn3: ?WriteTransaction):
+        if err3 is not None:
+            raise AssertionError("Queued writer callback should not fail, got {err3}")
+        if txn3 is not None:
+            events.append("txn3")
+            testing.assertEqual(events, ["txn2", "txn3"], "Queued write requests should be granted in FIFO order")
+            txn31 = txn3
+            testing.assertEqual(txn31.get(b"txn:001"), b"one", "Queued writer should see committed data from prior writer")
+            testing.assertEqual(txn31.get(b"txn:002"), b"two", "Queued writer should see committed data from previous queued writer")
+            txn31.put(b"txn:003", b"three")
+            await async txn31.commit()
+
+            testing.assertEqual(db.get(b"txn:003"), b"three", "Final queued writer should persist its committed data")
+
+            await async db.close()
+            await async fs.rmtree(db_path)
+            await async fs.rmdir(db_path)
+            t.success()
+            return
+        raise AssertionError("Queued writer callback returned neither transaction nor error")
+
+    def writer2(err2: ?Exception, txn2: ?WriteTransaction):
+        if err2 is not None:
+            raise AssertionError("Queued writer callback should not fail, got {err2}")
+        if txn2 is not None:
+            events.append("txn2")
+            testing.assertEqual(events, ["txn2"], "First queued writer should run before later queued writers")
+            txn21 = txn2
+            testing.assertEqual(txn21.get(b"txn:001"), b"one", "First queued writer should see committed data from active writer")
+            txn21.put(b"txn:002", b"two")
+            await async txn21.commit()
+            return
+        raise AssertionError("Queued writer callback returned neither transaction nor error")
+
+    db.request_write(writer2)
+    db.request_write(writer3)
+    testing.assertEqual(events, [], "Queued write requests should wait while another write transaction is active")
+    await async txn1.commit()
 
 actor _test_cursors(t: testing.EnvT):
     """Verify read-cursor iteration order and prefix-seek behavior.
