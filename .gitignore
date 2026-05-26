@@ -1,0 +1,11 @@
+.build
+build.zig*
+!deps/lmdb/build.zig
+!deps/lmdb/build.zig.zon
+.acton.lock
+.actonc.lock
+out
+zig-cache
+.zig-cache
+zig-pkg
+zig-out

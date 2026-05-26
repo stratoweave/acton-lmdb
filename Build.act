@@ -2,8 +2,7 @@ name = "acton_lmdb"
 fingerprint = 0xf6ca91100767a811
 zig_dependencies = {
     "lmdb": (
-        url="https://github.com/stratoweave/lmdb/archive/b450f2055897afd1081e32c6fdcb856432b56ab6.tar.gz",
-        hash="N-V-__8AAHHvCADV6Hbm3G-4QgOE--Eckeq8PJIA52gy0zMN",
+        path="deps/lmdb",
         artifacts=["lmdb"]
     )
 }
