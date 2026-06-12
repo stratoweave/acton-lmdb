@@ -1,5 +1,5 @@
-name = "acton_lmdb"
-fingerprint = 0xf6ca91100767a811
+name = "lmdb"
+fingerprint = 0xb29661038380a26d
 zig_dependencies = {
     "lmdb": (
         path="deps/lmdb",

@@ -450,7 +450,7 @@ actor WriteCursor(txn_ptr: int, dbi: int, affinity_wtid: int):
         close()
 
 
-# C extension functions (implemented in lmdb.ext.c)
+# C extension functions (implemented in lib.ext.c)
 def _env_create_and_open(path: str, max_size: int) -> (int, int, int):
     """Create environment and open database, returns (env_ptr, dbi, max_key_size)"""
     NotImplemented
