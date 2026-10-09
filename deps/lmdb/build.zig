@@ -105,7 +105,6 @@ pub fn build(b: *std.Build) void {
             .name = test_name,
             .root_module = b.createModule(.{
                 .target = target,
-                .optimize = .Debug,
             }),
         });
 
