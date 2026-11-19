@@ -927,35 +927,31 @@ actor _test_error_types_and_transaction_recovery(t: testing.EnvT):
     must abort its transaction, discard earlier writes, and release the writer
     slot. The same cleanup guarantee must hold for write-cursor failures.
     """
-    fc = file.FileCap(t.env.cap)
-    fs = file.FS(fc)
-    var db_path = ""
-    wfcap = file.WriteFileCap(fc)
-    var database: ?Db = None
-
-    def cursor_recovery(err: ?Exception, txn: ?WriteTransaction):
-        db = database!
-        if err is not None:
-            raise AssertionError("Writer request after cursor failure should not fail, got {err}")
-        if txn is not None:
-            testing.assertEqual(db.get(b"cursor_discarded"), None, "A failed cursor write should discard earlier transaction writes")
-            recovery = txn
-            recovery.put(b"cursor_recovered", b"value")
-            await async recovery.commit()
-            testing.assertEqual(db.get(b"cursor_recovered"), b"value", "A cursor failure should release the writer slot")
-
-            await async db.close()
-            await async fs.rmtree(db_path)
-            await async fs.rmdir(db_path)
-            t.success()
-            return
-        raise AssertionError("Writer request after cursor failure returned neither transaction nor error")
-
-
     proc def __startup__():
+        fc = file.FileCap(t.env.cap)
+        fs = file.FS(fc)
+        wfcap = file.WriteFileCap(fc)
+
         db_path = fs.mktmpdir("test_lmdb_map_full_")
         db = Db(wfcap, db_path, 256 * 1024)
-        database = db
+
+
+        def cursor_recovery(err: ?Exception, txn: ?WriteTransaction):
+            if err is not None:
+                raise AssertionError("Writer request after cursor failure should not fail, got {err}")
+            if txn is not None:
+                testing.assertEqual(db.get(b"cursor_discarded"), None, "A failed cursor write should discard earlier transaction writes")
+                recovery = txn
+                recovery.put(b"cursor_recovered", b"value")
+                await async recovery.commit()
+                testing.assertEqual(db.get(b"cursor_recovered"), b"value", "A cursor failure should release the writer slot")
+
+                await async db.close()
+                await async fs.rmtree(db_path)
+                await async fs.rmdir(db_path)
+                t.success()
+                return
+            raise AssertionError("Writer request after cursor failure returned neither transaction nor error")
 
         key_size_raised = False
         try:
@@ -1025,52 +1021,49 @@ actor _test_queued_write_requests(t: testing.EnvT):
     queued callbacks do not run early, and that each writer is handed out only
     after the previous one commits, in the same order the requests were made.
     """
-    fc = file.FileCap(t.env.cap)
-    fs = file.FS(fc)
-    var db_path = ""
-    wfcap = file.WriteFileCap(fc)
-    var database: ?Db = None
-    var events: list[str] = []
-
-    def writer3(err3: ?Exception, txn3: ?WriteTransaction):
-        db = database!
-        if err3 is not None:
-            raise AssertionError("Queued writer callback should not fail, got {err3}")
-        if txn3 is not None:
-            events.append("txn3")
-            testing.assertEqual(events, ["txn2", "txn3"], "Queued write requests should be granted in FIFO order")
-            txn31 = txn3
-            testing.assertEqual(txn31.get(b"txn:001"), b"one", "Queued writer should see committed data from prior writer")
-            testing.assertEqual(txn31.get(b"txn:002"), b"two", "Queued writer should see committed data from previous queued writer")
-            txn31.put(b"txn:003", b"three")
-            await async txn31.commit()
-
-            testing.assertEqual(db.get(b"txn:003"), b"three", "Final queued writer should persist its committed data")
-
-            await async db.close()
-            await async fs.rmtree(db_path)
-            await async fs.rmdir(db_path)
-            t.success()
-            return
-        raise AssertionError("Queued writer callback returned neither transaction nor error")
-
-    def writer2(err2: ?Exception, txn2: ?WriteTransaction):
-        if err2 is not None:
-            raise AssertionError("Queued writer callback should not fail, got {err2}")
-        if txn2 is not None:
-            events.append("txn2")
-            testing.assertEqual(events, ["txn2"], "First queued writer should run before later queued writers")
-            txn21 = txn2
-            testing.assertEqual(txn21.get(b"txn:001"), b"one", "First queued writer should see committed data from active writer")
-            txn21.put(b"txn:002", b"two")
-            await async txn21.commit()
-            return
-        raise AssertionError("Queued writer callback returned neither transaction nor error")
-
     proc def __startup__():
+        fc = file.FileCap(t.env.cap)
+        fs = file.FS(fc)
+        wfcap = file.WriteFileCap(fc)
+        events: list[str] = []
+
         db_path = fs.mktmpdir("test_lmdb_write_queue_")
         db = Db(wfcap, db_path)
-        database = db
+
+
+        def writer3(err3: ?Exception, txn3: ?WriteTransaction):
+            if err3 is not None:
+                raise AssertionError("Queued writer callback should not fail, got {err3}")
+            if txn3 is not None:
+                events.append("txn3")
+                testing.assertEqual(events, ["txn2", "txn3"], "Queued write requests should be granted in FIFO order")
+                txn31 = txn3
+                testing.assertEqual(txn31.get(b"txn:001"), b"one", "Queued writer should see committed data from prior writer")
+                testing.assertEqual(txn31.get(b"txn:002"), b"two", "Queued writer should see committed data from previous queued writer")
+                txn31.put(b"txn:003", b"three")
+                await async txn31.commit()
+
+                testing.assertEqual(db.get(b"txn:003"), b"three", "Final queued writer should persist its committed data")
+
+                await async db.close()
+                await async fs.rmtree(db_path)
+                await async fs.rmdir(db_path)
+                t.success()
+                return
+            raise AssertionError("Queued writer callback returned neither transaction nor error")
+
+        def writer2(err2: ?Exception, txn2: ?WriteTransaction):
+            if err2 is not None:
+                raise AssertionError("Queued writer callback should not fail, got {err2}")
+            if txn2 is not None:
+                events.append("txn2")
+                testing.assertEqual(events, ["txn2"], "First queued writer should run before later queued writers")
+                txn21 = txn2
+                testing.assertEqual(txn21.get(b"txn:001"), b"one", "First queued writer should see committed data from active writer")
+                txn21.put(b"txn:002", b"two")
+                await async txn21.commit()
+                return
+            raise AssertionError("Queued writer callback returned neither transaction nor error")
 
         txn1 = db.begin_write()
         txn1.put(b"txn:001", b"one")
