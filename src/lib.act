@@ -260,7 +260,6 @@ actor Db(cap: file.WriteFileCap, path: str, max_size: int=10485760):
     proc def __startup__():
         open()
 
-    __startup__()
 
 actor ReadTransaction(env: int, dbi: int, release_fn: action() -> None):
     """Read-only transaction - multiple allowed concurrently
@@ -342,7 +341,6 @@ actor ReadTransaction(env: int, dbi: int, release_fn: action() -> None):
     proc def __startup__():
         _txn = _txn_begin_read(env)
 
-    __startup__()
 
 actor WriteTransaction(env: int, dbi: int, max_key_size: int, release_fn: action() -> None):
     """Read-write transaction - only one allowed at a time.
@@ -476,7 +474,6 @@ actor WriteTransaction(env: int, dbi: int, max_key_size: int, release_fn: action
 
         _txn = _txn_begin_write(env)
 
-    __startup__()
 
 actor ReadCursor(txn_ptr: int, dbi: int):
     """Cursor for read-only iteration over database"""
@@ -526,7 +523,6 @@ actor ReadCursor(txn_ptr: int, dbi: int):
     proc def __startup__():
         _cursor = _cursor_open(txn_ptr, dbi)
 
-    __startup__()
 
 actor WriteCursor(txn_ptr: int, dbi: int, affinity_wtid: int, failure_fn: action() -> None):
     """Cursor for read-write iteration and modification.
@@ -611,7 +607,6 @@ actor WriteCursor(txn_ptr: int, dbi: int, affinity_wtid: int, failure_fn: action
     proc def __startup__():
         _set_affinity(affinity_wtid)
 
-    __startup__()
 
 
 # C extension functions (implemented in lib.ext.c)
@@ -726,7 +721,6 @@ actor _test_db_basic_operations(t: testing.EnvT):
 
         t.success()
 
-    __startup__()
 
 actor _test_db_multiple_keys(t: testing.EnvT):
     """Verify that multiple distinct keys can be stored and retrieved independently.
@@ -762,7 +756,6 @@ actor _test_db_multiple_keys(t: testing.EnvT):
 
         t.success()
 
-    __startup__()
 
 actor _test_db_persistence(t: testing.EnvT):
     """Verify that committed data survives closing and reopening the database.
@@ -797,7 +790,6 @@ actor _test_db_persistence(t: testing.EnvT):
 
         t.success()
 
-    __startup__()
 
 actor _test_db_large_values(t: testing.EnvT):
     """Verify that LMDB can round-trip a large value without truncation or corruption.
@@ -832,7 +824,6 @@ actor _test_db_large_values(t: testing.EnvT):
 
         t.success()
 
-    __startup__()
 
 actor _test_db_binary_data(t: testing.EnvT):
     """Verify that binary keys and values, including null bytes, round-trip correctly.
@@ -866,7 +857,6 @@ actor _test_db_binary_data(t: testing.EnvT):
 
         t.success()
 
-    __startup__()
 
 actor _test_transactions(t: testing.EnvT):
     """Verify write-transaction commit, abort, and in-transaction reads.
@@ -917,7 +907,6 @@ actor _test_transactions(t: testing.EnvT):
         await async fs.rmdir(db_path)
         t.success()
 
-    __startup__()
 
 actor _test_error_types_and_transaction_recovery(t: testing.EnvT):
     """Verify typed LMDB errors and recovery after failed writes.
@@ -1011,7 +1000,6 @@ actor _test_error_types_and_transaction_recovery(t: testing.EnvT):
 
         db.request_write(cursor_recovery)
 
-    __startup__()
 
 actor _test_queued_write_requests(t: testing.EnvT):
     """Verify that queued write requests are granted in FIFO order.
@@ -1073,7 +1061,6 @@ actor _test_queued_write_requests(t: testing.EnvT):
         testing.assertEqual(events, [], "Queued write requests should wait while another write transaction is active")
         await async txn1.commit()
 
-    __startup__()
 
 actor _test_cursors(t: testing.EnvT):
     """Verify read-cursor iteration order and prefix-seek behavior.
@@ -1129,7 +1116,6 @@ actor _test_cursors(t: testing.EnvT):
         await async fs.rmdir(db_path)
         t.success()
 
-    __startup__()
 
 actor _test_cursor_persistence(t: testing.EnvT):
     """Verify that a cursor can read data written by an earlier Db instance.
@@ -1203,7 +1189,6 @@ actor _test_cursor_persistence(t: testing.EnvT):
         await async fs.rmdir(db_path)
         t.success()
 
-    __startup__()
 
 actor _test_write_path_guard_while_txn_active(t: testing.EnvT):
     """Verify that direct Db writes are blocked while an explicit write transaction is active.
@@ -1249,7 +1234,6 @@ actor _test_write_path_guard_while_txn_active(t: testing.EnvT):
         await async fs.rmdir(db_path)
         t.success()
 
-    __startup__()
 
 actor _test_close_fails_with_active_transactions(t: testing.EnvT):
     """Verify that Db.close is rejected while read or write transactions are still active.
@@ -1293,7 +1277,6 @@ actor _test_close_fails_with_active_transactions(t: testing.EnvT):
         await async fs.rmdir(db_path)
         t.success()
 
-    __startup__()
 
 actor _test_cursor_invalid_after_transaction_end(t: testing.EnvT):
     """Verify that cursors become unusable once their parent transaction has ended.
@@ -1344,7 +1327,6 @@ actor _test_cursor_invalid_after_transaction_end(t: testing.EnvT):
         await async fs.rmdir(db_path)
         t.success()
 
-    __startup__()
 
 actor _test_write_txn_stress_release_and_affinity(t: testing.EnvT):
     """Stress repeated write-transaction commit and abort paths for clean release semantics.
@@ -1388,7 +1370,6 @@ actor _test_write_txn_stress_release_and_affinity(t: testing.EnvT):
         await async fs.rmdir(db_path)
         t.success()
 
-    __startup__()
 
 actor _test_write_cursor_stress_with_explicit_write_transactions(t: testing.EnvT):
     """Stress write-cursor updates inside explicit write transactions and verify visibility after commit.
@@ -1429,5 +1410,3 @@ actor _test_write_cursor_stress_with_explicit_write_transactions(t: testing.EnvT
         await async fs.rmtree(db_path)
         await async fs.rmdir(db_path)
         t.success()
-
-    __startup__()
