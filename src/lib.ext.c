@@ -23,32 +23,32 @@ static void raise_lmdb_error(const char *op, int rc) {
     char error_buf[256];
     snprintf(error_buf, sizeof(error_buf), "%s: %s (%d)", op, mdb_strerror(rc), rc);
     switch (rc) {
-    case MDB_KEYEXIST: RAISE(lmdbQ_libQ_KeyExistsError, to$str(error_buf));
-    case MDB_NOTFOUND: RAISE(lmdbQ_libQ_NotFoundError, to$str(error_buf));
-    case MDB_PAGE_NOTFOUND: RAISE(lmdbQ_libQ_PageNotFoundError, to$str(error_buf));
-    case MDB_CORRUPTED: RAISE(lmdbQ_libQ_CorruptedError, to$str(error_buf));
-    case MDB_PANIC: RAISE(lmdbQ_libQ_PanicError, to$str(error_buf));
-    case MDB_VERSION_MISMATCH: RAISE(lmdbQ_libQ_VersionMismatchError, to$str(error_buf));
-    case MDB_INVALID: RAISE(lmdbQ_libQ_InvalidError, to$str(error_buf));
-    case MDB_MAP_FULL: RAISE(lmdbQ_libQ_MapFullError, to$str(error_buf));
-    case MDB_DBS_FULL: RAISE(lmdbQ_libQ_DbsFullError, to$str(error_buf));
-    case MDB_READERS_FULL: RAISE(lmdbQ_libQ_ReadersFullError, to$str(error_buf));
-    case MDB_TLS_FULL: RAISE(lmdbQ_libQ_TlsFullError, to$str(error_buf));
-    case MDB_TXN_FULL: RAISE(lmdbQ_libQ_TxnFullError, to$str(error_buf));
-    case MDB_CURSOR_FULL: RAISE(lmdbQ_libQ_CursorFullError, to$str(error_buf));
-    case MDB_PAGE_FULL: RAISE(lmdbQ_libQ_PageFullError, to$str(error_buf));
-    case MDB_MAP_RESIZED: RAISE(lmdbQ_libQ_MapResizedError, to$str(error_buf));
-    case MDB_INCOMPATIBLE: RAISE(lmdbQ_libQ_IncompatibleError, to$str(error_buf));
-    case MDB_BAD_RSLOT: RAISE(lmdbQ_libQ_BadRslotError, to$str(error_buf));
-    case MDB_BAD_DBI: RAISE(lmdbQ_libQ_BadDbiError, to$str(error_buf));
-    case MDB_BAD_TXN: RAISE(lmdbQ_libQ_BadTxnError, to$str(error_buf));
-    case MDB_BAD_VALSIZE: RAISE(lmdbQ_libQ_BadValsizeError, to$str(error_buf));
-    case EACCES: RAISE(lmdbQ_libQ_ReadonlyError, to$str(error_buf));
-    case EINVAL: RAISE(lmdbQ_libQ_InvalidParameterError, to$str(error_buf));
-    case EAGAIN: RAISE(lmdbQ_libQ_LockError, to$str(error_buf));
-    case ENOMEM: RAISE(lmdbQ_libQ_MemoryError, to$str(error_buf));
-    case ENOSPC: RAISE(lmdbQ_libQ_DiskError, to$str(error_buf));
-    default: RAISE(lmdbQ_libQ_Error, to$str(error_buf));
+    case MDB_KEYEXIST: RAISE(lmdbQ_libQ_KeyExistsError, actStrFromCStringCopy(error_buf));
+    case MDB_NOTFOUND: RAISE(lmdbQ_libQ_NotFoundError, actStrFromCStringCopy(error_buf));
+    case MDB_PAGE_NOTFOUND: RAISE(lmdbQ_libQ_PageNotFoundError, actStrFromCStringCopy(error_buf));
+    case MDB_CORRUPTED: RAISE(lmdbQ_libQ_CorruptedError, actStrFromCStringCopy(error_buf));
+    case MDB_PANIC: RAISE(lmdbQ_libQ_PanicError, actStrFromCStringCopy(error_buf));
+    case MDB_VERSION_MISMATCH: RAISE(lmdbQ_libQ_VersionMismatchError, actStrFromCStringCopy(error_buf));
+    case MDB_INVALID: RAISE(lmdbQ_libQ_InvalidError, actStrFromCStringCopy(error_buf));
+    case MDB_MAP_FULL: RAISE(lmdbQ_libQ_MapFullError, actStrFromCStringCopy(error_buf));
+    case MDB_DBS_FULL: RAISE(lmdbQ_libQ_DbsFullError, actStrFromCStringCopy(error_buf));
+    case MDB_READERS_FULL: RAISE(lmdbQ_libQ_ReadersFullError, actStrFromCStringCopy(error_buf));
+    case MDB_TLS_FULL: RAISE(lmdbQ_libQ_TlsFullError, actStrFromCStringCopy(error_buf));
+    case MDB_TXN_FULL: RAISE(lmdbQ_libQ_TxnFullError, actStrFromCStringCopy(error_buf));
+    case MDB_CURSOR_FULL: RAISE(lmdbQ_libQ_CursorFullError, actStrFromCStringCopy(error_buf));
+    case MDB_PAGE_FULL: RAISE(lmdbQ_libQ_PageFullError, actStrFromCStringCopy(error_buf));
+    case MDB_MAP_RESIZED: RAISE(lmdbQ_libQ_MapResizedError, actStrFromCStringCopy(error_buf));
+    case MDB_INCOMPATIBLE: RAISE(lmdbQ_libQ_IncompatibleError, actStrFromCStringCopy(error_buf));
+    case MDB_BAD_RSLOT: RAISE(lmdbQ_libQ_BadRslotError, actStrFromCStringCopy(error_buf));
+    case MDB_BAD_DBI: RAISE(lmdbQ_libQ_BadDbiError, actStrFromCStringCopy(error_buf));
+    case MDB_BAD_TXN: RAISE(lmdbQ_libQ_BadTxnError, actStrFromCStringCopy(error_buf));
+    case MDB_BAD_VALSIZE: RAISE(lmdbQ_libQ_BadValsizeError, actStrFromCStringCopy(error_buf));
+    case EACCES: RAISE(lmdbQ_libQ_ReadonlyError, actStrFromCStringCopy(error_buf));
+    case EINVAL: RAISE(lmdbQ_libQ_InvalidParameterError, actStrFromCStringCopy(error_buf));
+    case EAGAIN: RAISE(lmdbQ_libQ_LockError, actStrFromCStringCopy(error_buf));
+    case ENOMEM: RAISE(lmdbQ_libQ_MemoryError, actStrFromCStringCopy(error_buf));
+    case ENOSPC: RAISE(lmdbQ_libQ_DiskError, actStrFromCStringCopy(error_buf));
+    default: RAISE(lmdbQ_libQ_Error, actStrFromCStringCopy(error_buf));
     }
 }
 
@@ -77,7 +77,7 @@ B_str lmdbQ_libQ_version() {
     snprintf(version_str, sizeof(version_str), "%s (%d.%d.%d)",
              version, major, minor, patch);
 
-    return to$str(version_str);
+    return actStrFromCStringCopy(version_str);
 }
 
 B_tuple lmdbQ_libQ__env_create_and_open(B_str path, int64_t max_size) {
@@ -198,7 +198,7 @@ B_bytes lmdbQ_libQ__get(int64_t env_ptr, int64_t dbi, B_bytes key) {
     }
 
     // Copy the data BEFORE aborting the transaction
-    B_bytes result = to$bytesD_len(mval.mv_data, mval.mv_size);
+    B_bytes result = actBytesFromCStringLengthCopy(mval.mv_data, mval.mv_size);
     mdb_txn_abort(txn);  // Now safe to abort after data is copied
     return result;
 }
@@ -317,7 +317,7 @@ B_bytes lmdbQ_libQ__txn_get(int64_t txn_ptr, int64_t dbi, B_bytes key) {
     }
 
     // Copy the data to return
-    return to$bytesD_len(mval.mv_data, mval.mv_size);
+    return actBytesFromCStringLengthCopy(mval.mv_data, mval.mv_size);
 }
 
 bool lmdbQ_libQ__txn_delete(int64_t txn_ptr, int64_t dbi, B_bytes key) {
@@ -368,8 +368,8 @@ B_tuple lmdbQ_libQ__cursor_first(int64_t cursor_ptr) {
         raise_lmdb_error("mdb_cursor_get(first)", rc);
     }
 
-    return $NEWTUPLE(2, to$bytesD_len(key.mv_data, key.mv_size),
-                        to$bytesD_len(val.mv_data, val.mv_size));
+    return $NEWTUPLE(2, actBytesFromCStringLengthCopy(key.mv_data, key.mv_size),
+                        actBytesFromCStringLengthCopy(val.mv_data, val.mv_size));
 }
 
 B_tuple lmdbQ_libQ__cursor_last(int64_t cursor_ptr) {
@@ -383,8 +383,8 @@ B_tuple lmdbQ_libQ__cursor_last(int64_t cursor_ptr) {
         raise_lmdb_error("mdb_cursor_get(last)", rc);
     }
 
-    return $NEWTUPLE(2, to$bytesD_len(key.mv_data, key.mv_size),
-                        to$bytesD_len(val.mv_data, val.mv_size));
+    return $NEWTUPLE(2, actBytesFromCStringLengthCopy(key.mv_data, key.mv_size),
+                        actBytesFromCStringLengthCopy(val.mv_data, val.mv_size));
 }
 
 B_tuple lmdbQ_libQ__cursor_next(int64_t cursor_ptr) {
@@ -398,8 +398,8 @@ B_tuple lmdbQ_libQ__cursor_next(int64_t cursor_ptr) {
         raise_lmdb_error("mdb_cursor_get(next)", rc);
     }
 
-    return $NEWTUPLE(2, to$bytesD_len(key.mv_data, key.mv_size),
-                        to$bytesD_len(val.mv_data, val.mv_size));
+    return $NEWTUPLE(2, actBytesFromCStringLengthCopy(key.mv_data, key.mv_size),
+                        actBytesFromCStringLengthCopy(val.mv_data, val.mv_size));
 }
 
 B_tuple lmdbQ_libQ__cursor_prev(int64_t cursor_ptr) {
@@ -413,8 +413,8 @@ B_tuple lmdbQ_libQ__cursor_prev(int64_t cursor_ptr) {
         raise_lmdb_error("mdb_cursor_get(prev)", rc);
     }
 
-    return $NEWTUPLE(2, to$bytesD_len(key.mv_data, key.mv_size),
-                        to$bytesD_len(val.mv_data, val.mv_size));
+    return $NEWTUPLE(2, actBytesFromCStringLengthCopy(key.mv_data, key.mv_size),
+                        actBytesFromCStringLengthCopy(val.mv_data, val.mv_size));
 }
 
 B_tuple lmdbQ_libQ__cursor_seek(int64_t cursor_ptr, B_bytes seek_key) {
@@ -432,8 +432,8 @@ B_tuple lmdbQ_libQ__cursor_seek(int64_t cursor_ptr, B_bytes seek_key) {
         raise_lmdb_error("mdb_cursor_get(seek)", rc);
     }
 
-    return $NEWTUPLE(2, to$bytesD_len(key.mv_data, key.mv_size),
-                        to$bytesD_len(val.mv_data, val.mv_size));
+    return $NEWTUPLE(2, actBytesFromCStringLengthCopy(key.mv_data, key.mv_size),
+                        actBytesFromCStringLengthCopy(val.mv_data, val.mv_size));
 }
 
 B_tuple lmdbQ_libQ__cursor_seek_prefix(int64_t cursor_ptr, B_bytes prefix) {
@@ -454,8 +454,8 @@ B_tuple lmdbQ_libQ__cursor_seek_prefix(int64_t cursor_ptr, B_bytes prefix) {
     // Check if the key starts with the prefix
     if (key.mv_size >= prefix->nbytes &&
         memcmp(key.mv_data, prefix->str, prefix->nbytes) == 0) {
-        return $NEWTUPLE(2, to$bytesD_len(key.mv_data, key.mv_size),
-                            to$bytesD_len(val.mv_data, val.mv_size));
+        return $NEWTUPLE(2, actBytesFromCStringLengthCopy(key.mv_data, key.mv_size),
+                            actBytesFromCStringLengthCopy(val.mv_data, val.mv_size));
     }
 
     return (B_tuple)B_None;
