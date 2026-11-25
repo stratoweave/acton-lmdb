@@ -128,7 +128,7 @@ class KeySizeError(BadValsizeError):
     def __str__(self) -> str:
         return "Key size {len(self.key)} exceeds maximum {self.max_size}"
 
-def version() -> str:
+pure def version() -> str:
     """Get LMDB version
     """
     NotImplemented
@@ -257,7 +257,7 @@ actor Db(cap: file.WriteFileCap, path: str, max_size: int=10485760):
     def get_max_key_size() -> int:
         return _max_key_size
 
-    proc def __startup__():
+    def __startup__():
         open()
 
 
@@ -338,7 +338,7 @@ actor ReadTransaction(env: int, dbi: int, release_fn: action() -> None):
         if not _committed and not _aborted:
             abort()
 
-    proc def __startup__():
+    def __startup__():
         _txn = _txn_begin_read(env)
 
 
@@ -469,7 +469,7 @@ actor WriteTransaction(env: int, dbi: int, max_key_size: int, release_fn: action
         if not _committed and not _aborted:
             abort()
 
-    proc def __startup__():
+    def __startup__():
         _affinity_wtid = _pin_affinity()
 
         _txn = _txn_begin_write(env)
@@ -520,7 +520,7 @@ actor ReadCursor(txn_ptr: int, dbi: int):
     def __cleanup__():
         close()
 
-    proc def __startup__():
+    def __startup__():
         _cursor = _cursor_open(txn_ptr, dbi)
 
 
@@ -604,77 +604,77 @@ actor WriteCursor(txn_ptr: int, dbi: int, affinity_wtid: int, failure_fn: action
     def __cleanup__():
         close()
 
-    proc def __startup__():
+    def __startup__():
         _set_affinity(affinity_wtid)
 
 
 
 # C extension functions (implemented in lib.ext.c)
-def _env_create_and_open(path: str, max_size: int) -> (int, int, int):
+mut def _env_create_and_open(path: str, max_size: int) -> (int, int, int):
     """Create environment and open database, returns (env_ptr, dbi, max_key_size)"""
     NotImplemented
 
-def _put(env: int, dbi: int, key: bytes, value: bytes) -> None:
+mut def _put(env: int, dbi: int, key: bytes, value: bytes) -> None:
     NotImplemented
 
-def _get(env: int, dbi: int, key: bytes) -> ?bytes:
+mut def _get(env: int, dbi: int, key: bytes) -> ?bytes:
     NotImplemented
 
-def _delete(env: int, dbi: int, key: bytes) -> bool:
+mut def _delete(env: int, dbi: int, key: bytes) -> bool:
     NotImplemented
 
-def _close(env: int, dbi: int) -> None:
+mut def _close(env: int, dbi: int) -> None:
     NotImplemented
 
-def _txn_begin_read(env: int) -> int:
+mut def _txn_begin_read(env: int) -> int:
     NotImplemented
 
-def _txn_begin_write(env: int) -> int:
+mut def _txn_begin_write(env: int) -> int:
     NotImplemented
 
-def _txn_commit(txn: int) -> None:
+mut def _txn_commit(txn: int) -> None:
     NotImplemented
 
-def _txn_abort(txn: int) -> None:
+mut def _txn_abort(txn: int) -> None:
     NotImplemented
 
-def _txn_put(txn: int, dbi: int, key: bytes, value: bytes) -> None:
+mut def _txn_put(txn: int, dbi: int, key: bytes, value: bytes) -> None:
     NotImplemented
 
-def _txn_get(txn: int, dbi: int, key: bytes) -> ?bytes:
+mut def _txn_get(txn: int, dbi: int, key: bytes) -> ?bytes:
     NotImplemented
 
-def _txn_delete(txn: int, dbi: int, key: bytes) -> bool:
+mut def _txn_delete(txn: int, dbi: int, key: bytes) -> bool:
     NotImplemented
 
-def _cursor_open(txn: int, dbi: int) -> int:
+mut def _cursor_open(txn: int, dbi: int) -> int:
     NotImplemented
 
-def _cursor_close(cursor: int) -> None:
+mut def _cursor_close(cursor: int) -> None:
     NotImplemented
 
-def _cursor_first(cursor: int) -> ?(key: bytes, value: bytes):
+mut def _cursor_first(cursor: int) -> ?(key: bytes, value: bytes):
     NotImplemented
 
-def _cursor_last(cursor: int) -> ?(key: bytes, value: bytes):
+mut def _cursor_last(cursor: int) -> ?(key: bytes, value: bytes):
     NotImplemented
 
-def _cursor_next(cursor: int) -> ?(key: bytes, value: bytes):
+mut def _cursor_next(cursor: int) -> ?(key: bytes, value: bytes):
     NotImplemented
 
-def _cursor_prev(cursor: int) -> ?(key: bytes, value: bytes):
+mut def _cursor_prev(cursor: int) -> ?(key: bytes, value: bytes):
     NotImplemented
 
-def _cursor_seek(cursor: int, key: bytes) -> ?(key: bytes, value: bytes):
+mut def _cursor_seek(cursor: int, key: bytes) -> ?(key: bytes, value: bytes):
     NotImplemented
 
-def _cursor_seek_prefix(cursor: int, prefix: bytes) -> ?(key: bytes, value: bytes):
+mut def _cursor_seek_prefix(cursor: int, prefix: bytes) -> ?(key: bytes, value: bytes):
     NotImplemented
 
-def _cursor_put(cursor: int, key: bytes, value: bytes) -> None:
+mut def _cursor_put(cursor: int, key: bytes, value: bytes) -> None:
     NotImplemented
 
-def _cursor_delete(cursor: int) -> None:
+mut def _cursor_delete(cursor: int) -> None:
     NotImplemented
 
 
@@ -691,7 +691,7 @@ actor _test_db_basic_operations(t: testing.EnvT):
     fs = file.FS(fc)
     wfcap = file.WriteFileCap(fc)
 
-    proc def __startup__():
+    def __startup__():
         db_path = fs.mktmpdir("test_lmdb_basic_")
         db = Db(wfcap, db_path)
 
@@ -735,7 +735,7 @@ actor _test_db_multiple_keys(t: testing.EnvT):
     fs = file.FS(fc)
     wfcap = file.WriteFileCap(fc)
 
-    proc def __startup__():
+    def __startup__():
         db_path = fs.mktmpdir("test_lmdb_multi_")
         db = Db(wfcap, db_path)
 
@@ -770,7 +770,7 @@ actor _test_db_persistence(t: testing.EnvT):
     fs = file.FS(fc)
     wfcap = file.WriteFileCap(fc)
 
-    proc def __startup__():
+    def __startup__():
         db_path = fs.mktmpdir("test_lmdb_persist_")
 
         db1 = Db(wfcap, db_path)
@@ -806,7 +806,7 @@ actor _test_db_large_values(t: testing.EnvT):
     # Create a 1MB value
     large_value = b"x" * (1024 * 1024)
 
-    proc def __startup__():
+    def __startup__():
         db_path = fs.mktmpdir("test_lmdb_large_")
         db = Db(wfcap, db_path)
 
@@ -840,7 +840,7 @@ actor _test_db_binary_data(t: testing.EnvT):
     binary_key = b"\x00\x01\x02\x03\xff"
     binary_value = b"data\x00with\x00nulls\xff"
 
-    proc def __startup__():
+    def __startup__():
         db_path = fs.mktmpdir("test_lmdb_binary_")
         db = Db(wfcap, db_path)
 
@@ -872,7 +872,7 @@ actor _test_transactions(t: testing.EnvT):
     fs = file.FS(fc)
     wfcap = file.WriteFileCap(fc)
 
-    proc def __startup__():
+    def __startup__():
         db_path = fs.mktmpdir("test_lmdb_txn_")
         db = Db(wfcap, db_path)
 
@@ -916,7 +916,7 @@ actor _test_error_types_and_transaction_recovery(t: testing.EnvT):
     must abort its transaction, discard earlier writes, and release the writer
     slot. The same cleanup guarantee must hold for write-cursor failures.
     """
-    proc def __startup__():
+    def __startup__():
         fc = file.FileCap(t.env.cap)
         fs = file.FS(fc)
         wfcap = file.WriteFileCap(fc)
@@ -1009,7 +1009,7 @@ actor _test_queued_write_requests(t: testing.EnvT):
     queued callbacks do not run early, and that each writer is handed out only
     after the previous one commits, in the same order the requests were made.
     """
-    proc def __startup__():
+    def __startup__():
         fc = file.FileCap(t.env.cap)
         fs = file.FS(fc)
         wfcap = file.WriteFileCap(fc)
@@ -1075,7 +1075,7 @@ actor _test_cursors(t: testing.EnvT):
     fs = file.FS(fc)
     wfcap = file.WriteFileCap(fc)
 
-    proc def __startup__():
+    def __startup__():
         db_path = fs.mktmpdir("test_lmdb_cursor_")
         db = Db(wfcap, db_path)
 
@@ -1130,7 +1130,7 @@ actor _test_cursor_persistence(t: testing.EnvT):
     fs = file.FS(fc)
     wfcap = file.WriteFileCap(fc)
 
-    proc def __startup__():
+    def __startup__():
         db_path = fs.mktmpdir("test_lmdb_cursor_persist_")
 
         # Phase 1: Write data with first Db instance
@@ -1204,7 +1204,7 @@ actor _test_write_path_guard_while_txn_active(t: testing.EnvT):
     fs = file.FS(fc)
     wfcap = file.WriteFileCap(fc)
 
-    proc def __startup__():
+    def __startup__():
         db_path = fs.mktmpdir("test_lmdb_write_guard_")
         db = Db(wfcap, db_path)
 
@@ -1249,7 +1249,7 @@ actor _test_close_fails_with_active_transactions(t: testing.EnvT):
     fs = file.FS(fc)
     wfcap = file.WriteFileCap(fc)
 
-    proc def __startup__():
+    def __startup__():
         db_path = fs.mktmpdir("test_lmdb_close_guard_")
         db = Db(wfcap, db_path)
 
@@ -1291,7 +1291,7 @@ actor _test_cursor_invalid_after_transaction_end(t: testing.EnvT):
     fs = file.FS(fc)
     wfcap = file.WriteFileCap(fc)
 
-    proc def __startup__():
+    def __startup__():
         db_path = fs.mktmpdir("test_lmdb_cursor_invalidation_")
         db = Db(wfcap, db_path)
 
@@ -1342,7 +1342,7 @@ actor _test_write_txn_stress_release_and_affinity(t: testing.EnvT):
     fs = file.FS(fc)
     wfcap = file.WriteFileCap(fc)
 
-    proc def __startup__():
+    def __startup__():
         db_path = fs.mktmpdir("test_lmdb_stress_")
         db = Db(wfcap, db_path)
 
@@ -1385,7 +1385,7 @@ actor _test_write_cursor_stress_with_explicit_write_transactions(t: testing.EnvT
     fs = file.FS(fc)
     wfcap = file.WriteFileCap(fc)
 
-    proc def __startup__():
+    def __startup__():
         db_path = fs.mktmpdir("test_lmdb_write_cursor_stress_")
         db = Db(wfcap, db_path)
 
